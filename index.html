@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Что бьёт Камень? Дуэль</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <style>
+        :root {
+            --bg: #0f0f14;
+            --card: #1c1c26;
+            --accent: #ff3b5c;
+            --green: #00e676;
+            --text: #ffffff;
+            --sub: #8e8e9e;
+        }
+        * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        body {
+            margin: 0; padding: 16px;
+            background: var(--bg); color: var(--text);
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            min-height: 100vh; overflow-x: hidden;
+        }
+        .screen { display: none; width: 100%; max-width: 400px; text-align: center; }
+        .active { display: flex; flex-direction: column; gap: 14px; }
+        .card {
+            background: var(--card); padding: 22px; border-radius: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            border: 1px solid rgba(255,255,255,0.06);
+        }
+        h1 { margin: 0 0 8px; font-size: 24px; }
+        p { margin: 0; color: var(--sub); font-size: 14px; line-height: 1.4; }
+        input {
+            width: 100%; padding: 14px; border-radius: 14px;
+            border: 2px solid #2e2e3e; background: #14141c;
+            color: white; font-size: 16px; outline: none; text-align: center;
+            margin-top: 10px;
+        }
+        input:focus { border-color: var(--accent); }
+        button {
+            width: 100%; padding: 15px; border-radius: 14px;
+            border: none; background: var(--accent); color: white;
+            font-size: 16px; font-weight: 700; cursor: pointer;
+            margin-top: 10px; transition: transform 0.1s, opacity 0.2s;
+        }
+        button.secondary { background: #2e2e3e; }
+        button:active { transform: scale(0.97); }
+        button:disabled { opacity: 0.4; }
+
+        .timer-wrap {
+            width: 100%; background: #262635; height: 10px;
+            border-radius: 5px; overflow: hidden; margin-top: 6px;
+        }
+        .timer-bar {
+            height: 100%; background: var(--green); width: 100%;
+            transition: width 1s linear, background-color 0.3s;
+        }
+        .timer-num { font-size: 38px; font-weight: 900; margin: 4px 0; }
+        .target-word {
+            font-size: 28px; font-weight: 800; margin: 12px 0;
+            color: #ffca28; text-transform: uppercase; word-wrap: break-word;
+        }
+        .verdict-box {
+            font-size: 14px; color: #b0b0c0; font-style: italic;
+            min-height: 22px; margin-bottom: 8px;
+        }
+        .badge {
+            display: inline-block; padding: 6px 14px; border-radius: 20px;
+            font-size: 13px; font-weight: bold; background: #2e2e3e;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- 1. ЛОББИ -->
+    <div id="lobbyScreen" class="screen active">
+        <div class="card">
+            <h1>🪨 Что бьёт Камень?</h1>
+            <p>Онлайн-дуэль. На ход 30 сек, каждые 2 хода время сжимается на 5 сек!</p>
+            <input type="text" id="nameInput" placeholder="Твой ник" maxlength="15">
+            <input type="text" id="roomInput" placeholder="Придумай код комнаты (напр. 555)" maxlength="10">
+            <button onclick="startRoom(true)">👑 Создать комнату</button>
+            <button class="secondary" onclick="startRoom(false)">⚔️ Войти к другу по коду</button>
+        </div>
+    </div>
+
+    <!-- 2. ОЖИДАНИЕ -->
+    <div id="waitScreen" class="screen">
+        <div class="card">
+            <h1 id="waitTitle">Ждём друга... 👀</h1>
+            <p>Скажи другу ввести этот код и нажать «Войти к другу»:</p>
+            <div class="target-word" id="displayRoomCode">---</div>
+            <p id="connStatus">Создаём канал связи...</p>
+        </div>
+    </div>
+
+    <!-- 3. ИГРА -->
+    <div id="gameScreen" class="screen">
+        <div>
+            <span class="badge" id="turnBadge">Подготовка...</span>
+            <div class="timer-num" id="timerText">30</div>
+            <div class="timer-wrap">
+                <div class="timer-bar" id="timerBar"></div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="verdict-box" id="verdictText">Начинаем с классики!</div>
+            <p>ЧТО УНИЧТОЖИТ ЭТО:</p>
+            <div class="target-word" id="currentWordText">КАМЕНЬ 🪨</div>
+
+            <input type="text" id="wordInput" placeholder="Что это перебьет?.." autocomplete="off">
+            <button id="submitBtn" onclick="submitMove()">УДАРИТЬ 💥</button>
+        </div>
+    </div>
+
+    <!-- 4. ФИНАЛ -->
+    <div id="overScreen" class="screen">
+        <div class="card">
+            <h1 id="winnerTitle">Финал! 🏆</h1>
+            <p id="overReason" style="font-size: 16px; color: white; margin: 16px 0;"></p>
+            <button onclick="location.reload()">🔄 Новая катка</button>
+        </div>
+    </div>
+
+<script>
+    // Твой встроенный ключ Gemini API
+    const GEMINI_API_KEY = "AQ.Ab8RN6KlKMgVsk7Opxn75RR9VCaqPu3D-w6cFwrqRY5PEUNTLQ"; 
+
+    const tg = window.Telegram?.WebApp;
+    if (tg) tg.expand();
+    if (tg?.initDataUnsafe?.user?.first_name) {
+        document.getElementById('nameInput').value = tg.initDataUnsafe.user.first_name;
+    }
+
+    let peer = null;
+    let conn = null;
+    let isHost = false;
+    let myName = "Игрок 1";
+    let oppName = "Игрок 2";
+
+    let state = {
+        currentWord: "Камень 🪨",
+        history: ["камень"],
+        turnCount: 0,
+        hostTurn: true,
+        timeLeft: 30,
+        maxTime: 30,
+        verdict: "Начинаем с классики!"
+    };
+    let timerInterval = null;
+
+    function showScreen(id) {
+        document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+        document.getElementById(id).classList.add('active');
+    }
+
+    function startRoom(asHost) {
+        myName = document.getElementById('nameInput').value.trim() || (asHost ? 'Хост' : 'Гость');
+        const code = document.getElementById('roomInput').value.trim().toUpperCase();
+        if (!code) return alert("Введи код комнаты!");
+
+        isHost = asHost;
+        showScreen('waitScreen');
+        document.getElementById('displayRoomCode').innerText = code;
+
+        const peerId = "wbr-duel-room-" + code;
+
+        if (isHost) {
+            peer = new Peer(peerId);
+            peer.on('open', () => {
+                document.getElementById('connStatus').innerText = "Комната открыта! Ждём подключение друга...";
+            });
+            peer.on('connection', (connection) => {
+                conn = connection;
+                setupConnection();
+            });
+            peer.on('error', (err) => {
+                alert("Ошибка или комната уже занята: " + err.type);
+                location.reload();
+            });
+        } else {
+            document.getElementById('waitTitle').innerText = "Подключаемся... 🚀";
+            peer = new Peer();
+            peer.on('open', () => {
+                conn = peer.connect(peerId);
+                setupConnection();
+            });
+            peer.on('error', () => {
+                alert("Не удалось найти комнату с таким кодом!");
+                location.reload();
+            });
+        }
+    }
+
+    function setupConnection() {
+        conn.on('open', () => {
+            conn.send({ type: 'HELLO', name: myName });
+            if (isHost) {
+                setTimeout(() => startNewTurn(), 500);
+            }
+        });
+
+        conn.on('data', async (data) => {
+            if (data.type === 'HELLO') {
+                oppName = data.name;
+                showScreen('gameScreen');
+            }
+            else if (data.type === 'SYNC') {
+                state = data.state;
+                showScreen('gameScreen');
+                renderGameUI();
+            }
+            else if (data.type === 'TICK') {
+                state.timeLeft = data.timeLeft;
+                updateTimerUI();
+            }
+            else if (data.type === 'JUDGING') {
+                document.getElementById('verdictText').innerText = `⚖️ Судья проверяет ответ «${data.word}»...`;
+                document.getElementById('wordInput').disabled = true;
+                document.getElementById('submitBtn').disabled = true;
+            }
+            else if (data.type === 'SUBMIT_MOVE' && isHost) {
+                handleMoveOnHost(data.word, false);
+            }
+            else if (data.type === 'GAME_OVER') {
+                clearInterval(timerInterval);
+                showScreen('overScreen');
+                document.getElementById('winnerTitle').innerText = `🏆 Победил: ${data.winner}`;
+                document.getElementById('overReason').innerText = data.reason;
+            }
+        });
+
+        conn.on('close', () => {
+            endGame("Никто", "🔌 Друг отключился от игры.");
+        });
+    }
+
+    function getTurnDuration(turnCount) {
+        return Math.max(5, 30 - Math.floor(turnCount / 2) * 5);
+    }
+
+    function startNewTurn() {
+        if (!isHost) return;
+        clearInterval(timerInterval);
+
+        state.maxTime = getTurnDuration(state.turnCount);
+        state.timeLeft = state.maxTime;
+
+        conn.send({ type: 'SYNC', state });
+        showScreen('gameScreen');
+        renderGameUI();
+
+        timerInterval = setInterval(() => {
+            state.timeLeft--;
+            conn.send({ type: 'TICK', timeLeft: state.timeLeft });
+            updateTimerUI();
+
+            if (state.timeLeft <= 0) {
+                clearInterval(timerInterval);
+                const winner = state.hostTurn ? oppName : myName;
+                const loser = state.hostTurn ? myName : oppName;
+                endGame(winner, `⏰ У игрока ${loser} вышло время! Мозг закипел.`);
+            }
+        }, 1000);
+    }
+
+    function renderGameUI() {
+        document.getElementById('currentWordText').innerText = state.currentWord;
+        document.getElementById('verdictText').innerText = state.verdict;
+        updateTimerUI();
+
+        const isMyTurn = (isHost && state.hostTurn) || (!isHost && !state.hostTurn);
+        const badge = document.getElementById('turnBadge');
+        const input = document.getElementById('wordInput');
+        const btn = document.getElementById('submitBtn');
+
+        if (isMyTurn) {
+            badge.innerText = `🔥 ТВОЙ ХОД! (${state.maxTime} сек)`;
+            badge.style.background = '#00c853';
+            input.disabled = false;
+            btn.disabled = false;
+            input.focus();
+        } else {
+            badge.innerText = `⏳ Ходит ${oppName}... (${state.maxTime} сек)`;
+            badge.style.background = '#2e2e3e';
+            input.disabled = true;
+            btn.disabled = true;
+        }
+    }
+
+    function updateTimerUI() {
+        document.getElementById('timerText').innerText = state.timeLeft;
+        const pct = Math.max(0, (state.timeLeft / state.maxTime) * 100);
+        const bar = document.getElementById('timerBar');
+        bar.style.width = pct + '%';
+        if (state.timeLeft <= 5) bar.style.backgroundColor = '#ff1744';
+        else if (state.timeLeft <= 10) bar.style.backgroundColor = '#ff9100';
+        else bar.style.backgroundColor = '#00e676';
+    }
+
+    function submitMove() {
+        const input = document.getElementById('wordInput');
+        const word = input.value.trim();
+        if (!word) return;
+        input.value = '';
+
+        if (isHost) {
+            handleMoveOnHost(word, true);
+        } else {
+            conn.send({ type: 'SUBMIT_MOVE', word });
+        }
+    }
+
+    async function judgeWithAI(prevWord, newWord) {
+        if (!GEMINI_API_KEY) {
+            return { valid: true, reason: `💥 «${newWord}» сносит «${prevWord}»!` };
+        }
+        try {
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+            const prompt = `Игра "Что бьет камень". Предыдущее слово: "${prevWord}". Ответ игрока: "${newWord}".
+Побеждает ли новое слово предыдущее логически, физически или с понятным юмором? (Читы типа "Бог", "Вселенная", "Всё" запрещены -> valid: false).
+Ответь СТРОГО чистым JSON без маркдауна: {"valid": true/false, "reason": "короткий смешной коммент на русском до 10 слов"}`;
+
+            const res = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+            });
+            const data = await res.json();
+            let text = data.candidates[0].content.parts[0].text.replace(/```json|```/g, '').trim();
+            return JSON.parse(text);
+        } catch (e) {
+            return { valid: true, reason: `💥 «${newWord}» перебивает «${prevWord}»!` };
+        }
+    }
+
+    async function handleMoveOnHost(word, byHost) {
+        clearInterval(timerInterval);
+        const clean = word.trim();
+        const activePlayer = byHost ? myName : oppName;
+        const otherPlayer = byHost ? oppName : myName;
+
+        if (state.history.includes(clean.toLowerCase())) {
+            endGame(otherPlayer, `🔄 Игрок ${activePlayer} повторил слово «${clean}», которое уже было!`);
+            return;
+        }
+
+        document.getElementById('verdictText').innerText = `⚖️ Судья проверяет ответ «${clean}»...`;
+        conn.send({ type: 'JUDGING', word: clean });
+
+        const verdict = await judgeWithAI(state.currentWord, clean);
+
+        if (verdict.valid) {
+            state.history.push(clean.toLowerCase());
+            state.currentWord = clean;
+            state.turnCount++;
+            state.hostTurn = !state.hostTurn;
+            state.verdict = `✅ ${verdict.reason}`;
+            startNewTurn();
+        } else {
+            endGame(otherPlayer, `❌ Судья забраковал ответ «${clean}» от ${activePlayer}: ${verdict.reason}`);
+        }
+    }
+
+    function endGame(winner, reason) {
+        clearInterval(timerInterval);
+        if (conn && conn.open) {
+            conn.send({ type: 'GAME_OVER', winner, reason });
+        }
+        showScreen('overScreen');
+        document.getElementById('winnerTitle').innerText = `🏆 Победил: ${winner}`;
+        document.getElementById('overReason').innerText = reason;
+    }
+</script>
+</body>
+</html>
